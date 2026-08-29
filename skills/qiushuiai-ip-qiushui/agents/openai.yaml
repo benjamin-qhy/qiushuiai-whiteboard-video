@@ -1,0 +1,6 @@
+interface:
+  display_name: "秋水配图"
+  short_description: "为中文文章生成清爽手绘、可保头像身份的 qiushui IP 正文配图资产"
+  default_prompt: "Use $qiushuiai-ip-qiushui to 为这篇中文文章设计并生成几张 qiushui / 秋水 IP 的手绘正文配图；如果有头像参考就优先保留头像身份。"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,27 @@
+{
+  "name": "qiushuiai-whiteboard-video",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "开源的 QiushuiAI 白板视频制作 skill 集合。",
+  "scripts": {
+    "test": "npm run test:whiteboard && npm run test:image-gen && npm run test:python",
+    "test:whiteboard": "bun test skills/qiushuiai-video-pipeline-whiteboard/scripts/*.test.ts",
+    "test:image-gen": "node --import tsx --test skills/qiushuiai-image-gen/scripts/*.test.ts skills/qiushuiai-image-gen/scripts/providers/*.test.ts",
+    "test:python": "cd skills/qiushuiai-video-pipeline-whiteboard/scripts/python && python3 -m unittest test_whiteboard.py",
+    "check:whiteboard": "bun skills/qiushuiai-video-pipeline-whiteboard/scripts/main.ts --help",
+    "check:image-gen": "bun skills/qiushuiai-image-gen/scripts/main.ts --help",
+    "check:tts": "bun skills/qiushuiai-tts/scripts/main.ts --help",
+    "check:asr": "bun skills/qiushuiai-asr/scripts/main.ts --help"
+  },
+  "keywords": [
+    "qiushuiai",
+    "codex-skill",
+    "whiteboard-video",
+    "video-pipeline"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "tsx": "^4.20.5"
+  }
+}

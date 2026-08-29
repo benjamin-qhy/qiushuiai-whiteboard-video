@@ -1,0 +1,6 @@
+interface:
+  display_name: "秋水AI 白板视频流水线"
+  short_description: "把完整口播稿制作成多场景白板手绘成片"
+  default_prompt: "Use $qiushuiai-video-pipeline-whiteboard to turn 视频.md in my work directory into a complete multi-scene whiteboard video."
+policy:
+  allow_implicit_invocation: true

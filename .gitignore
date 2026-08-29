@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+.env
+.qiushuiai-skills/.env
+.qiushuiai-skills/**/CONFIG.local.md
+tmp/
+dist/
+coverage/
+*.log
+
+# 作品产物通常体积较大，示例请放 examples/ 并主动纳入版本控制。
+成品-*.mp4
+配音.mp3
+字幕.srt
+字幕.words.json
+封面-*.png
