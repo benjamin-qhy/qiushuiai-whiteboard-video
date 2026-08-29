@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, type Plan, type Scene } from "./director";
@@ -8,34 +8,28 @@ import { loadConfig } from "./config";
 import { importQiushuiPlan } from "./import-qiushui-scenes";
 import { parseSrt, retimeCues, reviewSubtitles, sceneSrt, segmentRenderCues, serializeSrt, spokenScript } from "./subtitles";
 
-type Args = { workdir: string; force: boolean; approveImages: boolean; phase: "audio" | "images" | "render" | "finalize" | "all"; scene?: number; imageProvider?: string; ttsProvider?: string; asrProvider?: string };
+type Args = { workdir: string; force: boolean; approveImages: boolean; phase: "audio" | "images" | "render" | "all"; scene?: number; imageProvider?: string; ttsProvider?: string; asrProvider?: string };
 const DEFAULT_SAM_API_URL = "http://localhost:8000";
 
 function usage() {
   console.log(`Usage: qiushuiai-video-pipeline-whiteboard --workdir <作品目录> [options]
 
-把 视频.md 制作为多场景白板手绘视频。开源版本不内置标题/标签生成；
-若 标题.md 存在会复用封面标题，否则从 视频.md 提取兜底标题。
+把 视频.md 制作为多场景白板手绘视频。开源版本不内置标题/标签生成。
 
 Options:
   --workdir, --dir <path>      作品目录，至少包含 视频.md
-  --phase <name>               audio | images | render | finalize | all（默认 images）
+  --phase <name>               audio | images | render | all（默认 images）
   --scene <n>                  只处理指定场景
   --force                      重新生成可复用阶段
   --image-provider <name>      传递给图像生成兜底层的 provider 名称
-  --tts-provider <name>        TTS provider: fish-audio | volcengine | edge-tts
-  --asr-provider <name>        ASR provider: fish-audio | volcengine | edge-tts
+  --tts-provider <name>        TTS provider: edge-tts | fish-audio | volcengine（默认 edge-tts）
+  --asr-provider <name>        ASR provider: edge-tts | fish-audio | volcengine（默认 edge-tts）
   --approve-images             兼容旧调用，当前版本不维护确认状态
   --help, -h                   显示帮助
 
 Typical flow:
   bun skills/qiushuiai-video-pipeline-whiteboard/scripts/main.ts --workdir <作品目录> --phase images
-  bun skills/qiushuiai-video-pipeline-whiteboard/scripts/main.ts --workdir <作品目录> --phase render
-  bun skills/qiushuiai-video-pipeline-whiteboard/scripts/main.ts --workdir <作品目录> --phase finalize`);
-}
-
-function coverFilename(ratio: "16:9" | "9:16") {
-  return ratio === "16:9" ? "封面-横版-16x9.png" : "封面-竖版-9x16.png";
+  bun skills/qiushuiai-video-pipeline-whiteboard/scripts/main.ts --workdir <作品目录> --phase render`);
 }
 
 function args(): Args {
@@ -57,7 +51,7 @@ function args(): Args {
     else if (values[i] === "--asr-provider") out.asrProvider = values[++i];
   }
   if (!out.workdir) throw new Error("需要 --workdir <作品目录>");
-  if (!["audio", "images", "render", "finalize", "all"].includes(out.phase)) throw new Error(`未知阶段: ${out.phase}`);
+  if (!["audio", "images", "render", "all"].includes(out.phase)) throw new Error(`未知阶段: ${out.phase}`);
   return out;
 }
 
@@ -76,25 +70,6 @@ async function duration(path: string) {
   const value = await new Response(proc.stdout).text();
   if (await proc.exited) throw new Error(`无法读取媒体时长: ${path}`);
   return Number(value.trim());
-}
-
-async function probeVideo(path: string) {
-  const proc = Bun.spawn([
-    "ffprobe", "-v", "error",
-    "-select_streams", "v:0",
-    "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate",
-    "-of", "json",
-    path,
-  ], { stdout: "pipe" });
-  const text = await new Response(proc.stdout).text();
-  if (await proc.exited) throw new Error(`无法读取视频信息: ${path}`);
-  const parsed = JSON.parse(text) as { streams?: Array<{ width: number; height: number; avg_frame_rate: string; r_frame_rate: string }> };
-  const stream = parsed.streams?.[0];
-  if (!stream) throw new Error(`视频缺少可用的视频流: ${path}`);
-  const rate = stream.r_frame_rate || stream.avg_frame_rate || "25/1";
-  const [num, den] = String(rate).split("/").map(Number);
-  const fps = num && den ? num / den : 25;
-  return { width: stream.width, height: stream.height, fps: fps > 0 ? fps : 25 };
 }
 
 async function burnFullSubtitles(video: string, subtitle: string, output: string) {
@@ -200,227 +175,6 @@ async function readSamSceneTrace(scenes: Scene[], work: string) {
     });
   }
   return items;
-}
-
-function cleanTitle(value: string) {
-  return value.replace(/^[「“"'#\s]+|[」”"'\s]+$/g, "").trim();
-}
-
-function inferCoverExpression(title: { line1: string; line2: string }, scene: Scene) {
-  const text = `${title.line1} ${title.line2} ${scene.summary} ${scene.key_information} ${scene.description}`;
-  if (/(风险|危险|别|不要|不能|复核|校验|确认|喊停|no go|判断)/i.test(text)) return "判断 / 风险提醒型";
-  if (/(为什么|怎么|拆解|解释|原理|区别|流程|结构)/i.test(text)) return "解释 / 拆解型";
-  return "解释 / 拆解型";
-}
-
-function fallbackCoverTitle(script: string) {
-  const title = script.match(/^#\s+(.+)$/m)?.[1]?.trim() || "";
-  return { line1: cleanTitle(title || "白板视频"), line2: "" };
-}
-
-function parseCoverTitle(content: string) {
-  const block = content.match(/###\s*封面标题[\s\S]*?(?:-+\s*line1[:：]\s*[「“"]?(.+?)[」”"]?\s*\n)(?:-+\s*line2[:：]\s*[「“"]?(.+?)[」”"]?\s*(?:\n|$))?/);
-  if (!block) return null;
-  const line1 = cleanTitle(block[1] || "");
-  const line2 = cleanTitle(block[2] || "");
-  if (!line1) return null;
-  return { line1, line2 };
-}
-
-type CoverVariant = {
-  pose: string;
-  wardrobe: string;
-  prop: string;
-  negativePose: string;
-};
-
-function stableIndex(seed: string, modulo: number) {
-  let hash = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return Math.abs(hash >>> 0) % modulo;
-}
-
-function selectCoverVariant(work: string, title: { line1: string; line2: string }, scene: Scene, expression: string): CoverVariant {
-  const seed = `${work}\n${title.line1}\n${title.line2}\n${scene.summary}\n${expression}`;
-  const poses = [
-    "双手微展开，像在对比两个选项或解释两种路径，手指自然放松，不做竖直食指动作",
-    "一手拿黑色签字笔，另一只手自然打开做讲解，身体轻微侧向标题区",
-    "一手托下巴做思考判断，另一只手自然放在身前，表情认真但不夸张",
-    "一手拿小卡片或便签，另一只手掌心向上做说明，像在拆解一个重点",
-    "双手在胸前做分层拆解手势，手掌打开，像在把复杂问题分成几层",
-    "一手拿平板或薄本，另一只手轻抬做提醒，手掌打开而不是食指上指",
-    "轻微前倾看向镜头，双手自然放在画面下方，靠表情和标题形成重点感",
-    "半转身回看镜头，一只手以开放手掌指向旁边结构图，不使用单指上指",
-  ];
-  const wardrobes = [
-    "浅蓝色长袖 T 恤，纯色、无大 logo、质感干净",
-    "白色短袖 Polo，简洁商务休闲，不带外套",
-    "深灰色细针织衫，内搭质感，理性可信",
-    "米白色轻薄衬衫，领口简洁，不像正式西装衬衫",
-    "海军蓝长袖 T 恤，低饱和纯色，干净利落",
-    "浅灰色 Polo，商务休闲，适合知识创作者",
-    "暖白色针织衫，柔和但不随便，禁止外套",
-    "浅绿色简洁短袖 T 恤，低饱和、无图案、无大 logo",
-  ];
-  const props = [
-    "可以出现一支笔作为轻道具",
-    "可以出现一张小卡片作为轻道具",
-    "可以出现一台平板作为轻道具",
-    "不需要额外道具，靠手势和主题结构表达",
-  ];
-  return {
-    pose: poses[stableIndex(`${seed}:pose`, poses.length)],
-    wardrobe: wardrobes[stableIndex(`${seed}:wardrobe`, wardrobes.length)],
-    prop: props[stableIndex(`${seed}:prop`, props.length)],
-    negativePose: "禁止右手食指竖直向上指，禁止单手食指指天，禁止连续复用知识博主常见的单指上指姿势。",
-  };
-}
-
-async function writeCoverPrompt(path: string, aspect: "16:9" | "9:16", title: { line1: string; line2: string }, scene: Scene, expression: string, variant: CoverVariant) {
-  const contentArea = aspect === "16:9" ? "4:3" : "3:4";
-  const prompt = [
-    `为一条 AI 知识类短视频生成 ${aspect} 封面图。`,
-    `最终交付画布必须是 ${aspect}，但标题、人物主体和所有关键信息必须收在画面垂直居中的 ${contentArea} 内容安全区内。`,
-    aspect === "16:9"
-      ? "横版 16:9 画布左右两侧只能作为背景延展、氛围留白或弱装饰，不得放置关键文字、人物脸部或核心主体。"
-      : "竖版 9:16 画布顶部和底部只能作为背景延展、氛围留白或弱装饰，不得放置关键文字、人物脸部或核心主体。",
-    "这是一张 subject-led 的知识类短视频封面，不是视频帧截图，也不是纯标题图。",
-    "优先出现主讲人本人；若本次没有提供身份参考图，则可改为知识类视频封面的通用主讲人主体。",
-    "若提供身份参考图，必须严格参考该图，保留同一人物身份识别特征，包括发型、发际线、脸型、五官比例、眼镜样式和整体气质，不得换成陌生人。",
-    "身份参考图只用于锁定主讲人身份，不要把首场画面或配图作为图像参考；视频主题只通过标题、内容摘要和简洁主题元素表达。",
-    "人物必须像知识视频封面中的主讲人，而不是站桩头像、证件照、路人或纯插画符号。",
-    "纯中文封面，标题文字必须直接烘焙进图片，不做后期叠字。",
-    `主标题：${title.line1 || "白板视频"}`,
-    title.line2 ? `副标题：${title.line2}` : "副标题可省略；如保留，必须明显小于主标题。",
-    `内容表达类型：${expression}。`,
-    `封面主题参考首场内容：${scene.summary}。`,
-    `首场关键表达：${scene.key_information}。`,
-    `首场核心画面：${scene.description}。`,
-    "画面必须适合手机观看：标题大、清晰、高对比，信息层次明确，避免小字和密集文字。",
-    "只允许 1 个主标题和可选 1 行副标题，严禁段落文字、项目列表、密集标注。",
-    "人物表情默认使用标准型，偏认真、判断感、提醒感，可以有轻微强调，但不能夸张到失真或变脸。",
-    `本次人物姿势必须使用：${variant.pose}。`,
-    variant.negativePose,
-    `本次服装必须使用：${variant.wardrobe}。`,
-    "服装必须是商务休闲内搭，严禁西装外套、夹克、风衣、大衣等任何外套；不得默认沿用头像参考图中的衣服。",
-    variant.prop,
-    "避免摄影写实，避免深色脏背景，避免复杂纹理，避免低对比，避免无人纯字图。",
-    "优先使用简洁有冲击力的主视觉：一个明确人物主体，加一个与主题相关的结构或风险信号，留出标题安全区。",
-    aspect === "16:9"
-      ? "横屏封面，人物建议位于右侧或右中区域，标题区留在左侧或中上区域，保证左侧文字清晰可读。"
-      : "竖屏封面，人物建议位于中下部偏右或中部偏右，标题位于上半区，避开底部平台按钮遮挡区。",
-    "风格：知识类视频封面、清晰、现代、强可读性、适合社交平台首屏点击。",
-  ].join("\n");
-  await writeFile(path, `${prompt}\n`);
-}
-
-async function prepareCoverRequest(work: string, scenes: Scene[], force: boolean) {
-  const titleFile = join(work, "标题.md");
-  const script = await readFile(join(work, "视频.md"), "utf8");
-  const title = existsSync(titleFile) ? parseCoverTitle(await readFile(titleFile, "utf8")) || fallbackCoverTitle(script) : fallbackCoverTitle(script);
-  const firstScene = scenes[0];
-  const coverDir = join(work, "封面");
-  await ensureDir(coverDir);
-  const prompt16x9 = join(coverDir, "cover-16x9.md");
-  const prompt9x16 = join(coverDir, "cover-9x16.md");
-  const coverWide = join(work, coverFilename("16:9"));
-  const coverTall = join(work, coverFilename("9:16"));
-  const identityRef = resolve(work, "00-约定", "头像.png");
-  const coverRulesFile = resolve(work, "00-约定", "封面生成约定.md");
-  const expression = inferCoverExpression(title, firstScene);
-  const coverVariant = selectCoverVariant(work, title, firstScene, expression);
-  await writeCoverPrompt(prompt16x9, "16:9", title, firstScene, expression, coverVariant);
-  await writeCoverPrompt(prompt9x16, "9:16", title, firstScene, expression, coverVariant);
-  await writeFile(join(coverDir, "封面文案.json"), JSON.stringify({
-    title,
-    content_type: expression,
-    cover_variant: coverVariant,
-    first_scene: {
-      index: firstScene.index,
-      summary: firstScene.summary,
-      key_information: firstScene.key_information,
-      description: firstScene.description,
-    },
-  }, null, 2));
-  await writeFile(join(coverDir, "封面生成说明.md"), [
-    "# 封面生成说明",
-    "",
-    `- 主标题：${title.line1 || "白板视频"}`,
-    `- 副标题：${title.line2 || "无"}`,
-    `- 表达类型：${expression}`,
-    `- 首场主题：${firstScene.summary}`,
-    `- 首场关键表达：${firstScene.key_information}`,
-    `- 首场核心画面：${firstScene.description}`,
-    `- 本次姿势：${coverVariant.pose}`,
-    `- 本次服装：${coverVariant.wardrobe}`,
-    `- 姿势禁用：${coverVariant.negativePose}`,
-  ].join("\n"));
-  if (force && existsSync(coverWide)) await rm(coverWide, { force: true });
-  if (force && existsSync(coverTall)) await rm(coverTall, { force: true });
-  const requestPath = join(coverDir, "cover-request.json");
-  await writeFile(requestPath, JSON.stringify({
-    skill: "qiushuiai-video-cover",
-    platform: "generic",
-    aspect: "both",
-    form: "subject-led",
-    text_level: title.line2 ? "title-subtitle" : "title-only",
-    cover_mode: "subject-led",
-    must_use_identity_ref: existsSync(identityRef),
-    content_type: expression,
-    cover_rules_file: existsSync(coverRulesFile) ? coverRulesFile : null,
-    title,
-    pose_variant: coverVariant.pose,
-    wardrobe_variant: coverVariant.wardrobe,
-    prop_variant: coverVariant.prop,
-    negative_pose: coverVariant.negativePose,
-    reference_images: [identityRef].filter((path) => existsSync(path)),
-    identity_ref: existsSync(identityRef) ? identityRef : null,
-    scene_ref: null,
-    outputs: {
-      wide: coverWide,
-      tall: coverTall,
-    },
-    prompt_files: {
-      wide: prompt16x9,
-      tall: prompt9x16,
-    },
-  }, null, 2));
-  return { coverWide, coverTall, requestPath };
-}
-
-async function mergeCoverIntoFirstFrame(video: string, coverWide: string, coverTall: string, output: string, work: string) {
-  const info = await probeVideo(video);
-  const cover = info.width >= info.height ? coverWide : coverTall;
-  if (!existsSync(cover)) throw new Error(`缺少封面文件: ${cover}`);
-  const coverFrame = join(work, "封面", "cover-first-frame.png");
-  const frameDuration = 1 / info.fps;
-  await spawn([
-    "ffmpeg", "-y", "-i", cover,
-    "-vf", `scale=${info.width}:${info.height}:force_original_aspect_ratio=increase,crop=${info.width}:${info.height}`,
-    "-frames:v", "1",
-    "-update", "1",
-    coverFrame,
-  ]);
-  await spawn([
-    "ffmpeg", "-y",
-    "-loop", "1", "-i", coverFrame,
-    "-i", video,
-    "-filter_complex",
-    `[0:v]fps=${info.fps},trim=duration=${frameDuration},setpts=PTS-STARTPTS[cover];` +
-    `[1:v]trim=start_frame=1,setpts=PTS-STARTPTS[tail];` +
-    `[cover][tail]concat=n=2:v=1:a=0[v]`,
-    "-map", "[v]",
-    "-map", "1:a?",
-    "-c:v", "libx264",
-    "-preset", "medium",
-    "-crf", "18",
-    "-pix_fmt", "yuv420p",
-    "-c:a", "copy",
-    output,
-  ]);
 }
 
 function visualOutline(plan: Plan) {
@@ -573,15 +327,15 @@ async function main() {
   const logDir = join(work, "日志");
   const subtitleLogDir = join(logDir, "字幕");
   const pipelineLogDir = join(logDir, "流水线");
-  const ttsTrace = await readTtsTrace(work, opt.ttsProvider);
+  const ttsProvider = opt.ttsProvider || "edge-tts";
+  const asrProvider = opt.asrProvider || "edge-tts";
+  const ttsTrace = await readTtsTrace(work, ttsProvider);
   const samTraceBase = {
     configured_url: configuredSamUrl,
     effective_url: samUrl || null,
     health_ok: Boolean(samUrl),
     no_proxy: process.env.NO_PROXY || null,
   };
-  const trueBase = join(subtitleLogDir, "字幕-真转写");
-  const trueSrt = `${trueBase}.srt`;
   const review = join(subtitleLogDir, "字幕审核.md");
   const planPath = join(work, "scene", "分镜计划.json");
   await ensureDir(subtitleLogDir);
@@ -589,7 +343,7 @@ async function main() {
   await writeFile(join(pipelineLogDir, "tts-trace.json"), JSON.stringify(ttsTrace, null, 2));
   await writeFile(join(pipelineLogDir, "sam3-trace.json"), JSON.stringify({ ...samTraceBase, scenes: [] }, null, 2));
   if (existsSync(titleFile)) console.log(`复用已存在的标题产物: ${titleFile}`);
-  else console.warn(`未找到 标题.md；将从 视频.md 自动提取封面标题。开源版本不内置标题/标签生成，请由宿主或用户按需准备 标题.md。`);
+  else console.warn(`未找到 标题.md；开源版本不内置标题/标签生成，请由宿主或用户按需准备。`);
   if (opt.force || !existsSync(audio) || !existsSync(subtitles) || !existsSync(words)) {
     await spawn([
       process.execPath,
@@ -601,21 +355,20 @@ async function main() {
       "--subtitle-format", "both",
       "--trace-output", join(pipelineLogDir, "fish-tts-chunks.json"),
       "--drop-headings",
-      ...(opt.ttsProvider ? ["--provider", opt.ttsProvider] : []),
+      "--provider", ttsProvider,
     ]);
   }
-  if (!existsSync(subtitles) || !existsSync(words)) {
-    if (existsSync(ttsSubtitle) && existsSync(ttsWords)) {
+  if (opt.force || !existsSync(subtitles) || !existsSync(words)) {
+    if (!opt.force && existsSync(ttsSubtitle) && existsSync(ttsWords)) {
       await cp(ttsSubtitle, subtitles);
       await cp(ttsWords, words);
-      console.log(`复用火山 TTS 原生字幕: ${ttsSubtitle} | ${ttsWords}`);
+      console.log(`复用 TTS 原生字幕: ${ttsSubtitle} | ${ttsWords}`);
     } else {
-      await spawn([process.execPath, join(root, "qiushuiai-asr/scripts/main.ts"), "--audio", audio, "--script", script, "--output", join(work, "字幕"), "--drop-headings", ...(opt.asrProvider ? ["--provider", opt.asrProvider] : [])]);
+      await spawn([process.execPath, join(root, "qiushuiai-asr/scripts/main.ts"), "--audio", audio, "--script", script, "--output", join(work, "字幕"), "--drop-headings", "--provider", asrProvider, "--max-chars", "28"]);
     }
   }
-  if (opt.force || !existsSync(trueSrt)) await spawn([process.execPath, join(root, "qiushuiai-asr/scripts/main.ts"), "--audio", audio, "--output", trueBase, "--provider", "volcengine"]);
   const needsReview = !existsSync(review) || (await readFile(review, "utf8")).includes("字幕与视频.md存在差异");
-  if (opt.force || needsReview) await reviewSubtitles(script, subtitles, trueSrt, review);
+  if (opt.force || needsReview) await reviewSubtitles(script, subtitles, review);
   if (opt.phase === "audio") {
     console.log(`完整音频、字幕与审核已生成: ${audio} | ${subtitles} | ${review}`);
     return;
@@ -668,46 +421,9 @@ async function main() {
   if (opt.approveImages) {
     console.warn("--approve-images 已弃用：当前版本的人审确认由运行时代理直接完成，脚本不再维护 review-state.json。");
   }
-  if (opt.phase === "images" || opt.phase === "all") {
+  if (opt.phase === "images") {
     const imageDir = join(work, "scene");
     console.log(`画布图片已就绪，请由运行时代理直接发送 scene/scene-*/画面.png 给用户确认: ${imageDir}\n确认后直接使用 --phase render 继续。`);
-    return;
-  }
-  if (opt.phase === "finalize") {
-    const output = join(work, "成品-有字幕.mp4");
-    if (!existsSync(output)) throw new Error(`缺少成品视频，请先运行 --phase render: ${output}`);
-    const { coverWide, coverTall, requestPath } = await prepareCoverRequest(work, scenes, opt.force);
-    const samScenes = await readSamSceneTrace(scenes, work);
-    await writeFile(join(pipelineLogDir, "sam3-trace.json"), JSON.stringify({ ...samTraceBase, scenes: samScenes }, null, 2));
-    if (!existsSync(coverWide) || !existsSync(coverTall)) {
-      await writeFile(join(pipelineLogDir, "pipeline-state.json"), JSON.stringify({
-        status: "pending_cover_generation",
-        scenes: scenes.length,
-        output,
-        tts: ttsTrace,
-        sam3: { ...samTraceBase, scenes: samScenes },
-        cover_request: requestPath,
-        cover_wide: coverWide,
-        cover_tall: coverTall,
-        title_file: existsSync(titleFile) ? titleFile : null,
-      }, null, 2));
-      console.log(`缺少封面文件，请先调用 qiushuiai-video-cover:\n- 请求文件: ${requestPath}\n- 目标产物: ${coverWide} | ${coverTall}\n然后重新运行 --phase finalize。`);
-      return;
-    }
-    const coverFirstFrame = join(work, "成品-有字幕-带封面.mp4");
-    await mergeCoverIntoFirstFrame(output, coverWide, coverTall, coverFirstFrame, work);
-    await writeFile(join(pipelineLogDir, "pipeline-state.json"), JSON.stringify({
-      status: "complete",
-      scenes: scenes.length,
-      output,
-      tts: ttsTrace,
-      sam3: { ...samTraceBase, scenes: samScenes },
-      cover_first_frame_output: coverFirstFrame,
-      cover_wide: coverWide,
-      cover_tall: coverTall,
-      title_file: existsSync(titleFile) ? titleFile : null,
-    }, null, 2));
-    console.log(`首帧封面版已生成: ${coverFirstFrame}`);
     return;
   }
   const finals: string[] = [];
@@ -743,51 +459,15 @@ async function main() {
   else await spawn(["python3", py, "concat", "--inputs", ...finals, "--output", noSubtitleOutput]);
   const output = join(work, "成品-有字幕.mp4");
   await burnFullSubtitles(noSubtitleOutput, renderSubtitlePath, output);
-  const { coverWide, coverTall, requestPath } = await prepareCoverRequest(work, scenes, opt.force);
-  if (opt.phase === "render") {
-    await writeFile(join(pipelineLogDir, "pipeline-state.json"), JSON.stringify({
-      status: "pending_cover_generation",
-      scenes: scenes.length,
-      output,
-      tts: ttsTrace,
-      sam3: { ...samTraceBase, scenes: samScenes },
-      cover_request: requestPath,
-      cover_wide: coverWide,
-      cover_tall: coverTall,
-      title_file: existsSync(titleFile) ? titleFile : null,
-    }, null, 2));
-    console.log(`白板视频已生成: ${output}\n请先调用 qiushuiai-video-cover 生成封面:\n- 请求文件: ${requestPath}\n- 目标产物: ${coverWide} | ${coverTall}\n完成后使用 --phase finalize 继续。`);
-    return;
-  }
-  if (!existsSync(coverWide) || !existsSync(coverTall)) {
-    await writeFile(join(pipelineLogDir, "pipeline-state.json"), JSON.stringify({
-      status: "pending_cover_generation",
-      scenes: scenes.length,
-      output,
-      tts: ttsTrace,
-      sam3: { ...samTraceBase, scenes: samScenes },
-      cover_request: requestPath,
-      cover_wide: coverWide,
-      cover_tall: coverTall,
-      title_file: existsSync(titleFile) ? titleFile : null,
-    }, null, 2));
-    console.log(`缺少封面文件，请先调用 qiushuiai-video-cover:\n- 请求文件: ${requestPath}\n- 目标产物: ${coverWide} | ${coverTall}\n然后重新运行 --phase finalize。`);
-    return;
-  }
-  const coverFirstFrame = join(work, "成品-有字幕-带封面.mp4");
-  await mergeCoverIntoFirstFrame(output, coverWide, coverTall, coverFirstFrame, work);
   await writeFile(join(pipelineLogDir, "pipeline-state.json"), JSON.stringify({
     status: "complete",
     scenes: scenes.length,
     output,
     tts: ttsTrace,
     sam3: { ...samTraceBase, scenes: samScenes },
-    cover_first_frame_output: coverFirstFrame,
-    cover_wide: coverWide,
-    cover_tall: coverTall,
     title_file: existsSync(titleFile) ? titleFile : null,
   }, null, 2));
-  console.log(`白板视频已生成: ${output}\n封面已生成: ${coverWide} | ${coverTall}\n首帧封面版已生成: ${coverFirstFrame}`);
+  console.log(`白板视频已生成: ${output}`);
 }
 
 main().catch((error) => { console.error(`Error: ${error.message}`); process.exit(1); });

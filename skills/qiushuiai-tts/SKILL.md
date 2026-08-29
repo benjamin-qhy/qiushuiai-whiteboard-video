@@ -1,6 +1,6 @@
 ---
 name: qiushuiai-tts
-description: 文字转语音（TTS）— 把口播稿 / Markdown / 纯文本转成 MP3 语音，多 provider 可选：Fish Audio（默认，支持克隆声音 reference_id）、火山引擎豆包语音 v3 HTTP Chunked（支持克隆 speaker，可同时返回字幕）、edge-tts（免费备用）。火山已产字幕时后续流程复用该字幕；未产字幕再调用 qiushuiai-asr。默认配置统一放在 CONFIG.md。Use when the user says "生成语音"、"配音"、"文字转语音"、"口播稿转音频"、"TTS"、"text to speech"、"念出来"、"克隆声音"，或拿着一份口播脚本要进入录制替代环节时。
+description: 文字转语音（TTS）— 把口播稿 / Markdown / 纯文本转成 MP3 语音，默认使用免费 edge-tts；Fish Audio 和火山引擎豆包语音 v3 可作为显式配置的商业/克隆音色 provider。默认配置统一放在 CONFIG.md。Use when the user says "生成语音"、"配音"、"文字转语音"、"口播稿转音频"、"TTS"、"text to speech"、"念出来"、"克隆声音"，或拿着一份口播脚本要进入录制替代环节时。
 metadata:
   openclaw:
     homepage: https://github.com/benjamin-qhy/qiushuiai-whiteboard-video#qiushuiai-tts
@@ -12,7 +12,7 @@ metadata:
 
 # 文字转语音（TTS）
 
-把文本（尤其是 `qiushuiai-oral-script` 产的口播稿）转成 MP3 语音。多 provider 抽象：Fish Audio / 火山引擎豆包语音 / edge-tts，各读自己的凭证，**一处配置跨 skill 复用**。
+把文本（尤其是口播稿）转成 MP3 语音。默认使用免费 `edge-tts`；Fish Audio / 火山引擎豆包语音作为可选 provider，各读自己的凭证，**一处配置跨 skill 复用**。
 
 职责单一：生成 TTS 音频。火山 v3 provider 开启原生字幕时可同时落盘字幕；Fish Audio / edge-tts 仍只产音频。剪辑不是本 skill 的事。
 
@@ -44,11 +44,11 @@ provider 抽象在 `scripts/providers/tts/`，各读下表所列的**平台级�
 
 | Provider | 凭证（密钥放 `.env`） | 默认声音 | 说明 |
 |----------|------|------|------|
-| `fish-audio`（默认） | `FISH_AUDIO_API_KEY`、`FISH_AUDIO_REFERENCE_ID` | reference_id 为空则用模型默认声音 | 克隆声音传 reference_id |
+| `edge-tts`（默认） | 无需密钥（需 `pip install edge-tts`） | `zh-CN-YunxiNeural` | 免费默认 |
+| `fish-audio` | `FISH_AUDIO_API_KEY`、`FISH_AUDIO_REFERENCE_ID` | reference_id 为空则用模型默认声音 | 克隆声音传 reference_id |
 | `volcengine` | `VOLCENGINE_TTS_API_KEY`（v3 HTTP Chunked）；旧 v1 兼容路径才用 `VOLCENGINE_TTS_APPID`、`VOLCENGINE_TTS_TOKEN`、`VOLCENGINE_TTS_CLUSTER`、`VOLCENGINE_TTS_SPK_ID` | `zh_female_shuangkuai_moon_bigtts` | 克隆声音使用 `seed-icl-2.0` + `speaker`；普通音色使用 `seed-tts-2.0`。v3 可返回字幕，不静默回退旧接口 |
-| `edge-tts` | 无需密钥（需 `pip install edge-tts`） | `zh-CN-YunxiNeural` | 免费备用 |
 
-**默认 provider 选择**（无 `--provider` 时）：有 `FISH_AUDIO_API_KEY` → fish-audio；否则有火山 `VOLCENGINE_TTS_API_KEY` 或 APPID+TOKEN → volcengine；否则 edge-tts。
+**默认 provider 选择**（无 `--provider` 且 CONFIG.md 未指定时）：`edge-tts`。若要使用 Fish Audio 或火山引擎，请显式传 `--provider` 或在 CONFIG.md 写 `provider:`。
 
 新增 provider（如 MiniMax、阿里云 CosyVoice）：在 `providers/tts/` 加一个导出 `getDefaultVoice()` + `generateSpeech()` 的模块，在 `main.ts` 的 `loadTtsProvider` 注册，凭证按本节约定命名（`<平台>_API_KEY` 等），即可接入，不改其他 skill。
 
@@ -77,7 +77,7 @@ VOLCENGINE_TTS_API_KEY=xxx
 
 ```yaml
 ---
-provider: fish-audio
+provider: edge-tts
 voice: ""              # 通用默认声音
 fish_audio:
   reference_id: ""     # 克隆声音 ID（非密钥），留空用模型默认
@@ -118,7 +118,7 @@ volcengine:
 ## Usage
 
 ```bash
-# 口播稿 → 成品口播音频（默认自动做响度处理）
+# 口播稿 → 成品口播音频（默认 edge-tts，自动做响度处理）
 ${BUN_X} {baseDir}/scripts/main.ts --file script.md --output narration --drop-headings
 
 # 直接文本
@@ -156,7 +156,7 @@ ${BUN_X} {baseDir}/scripts/main.ts --file script.md --output narration \
 | `--text <text>` | 直接输入文本 | — |
 | `--file <path>` | 输入 Markdown / 纯文本文件 | — |
 | `--output <path>` | 输出路径（`.mp3`，无扩展名自动补） | 必填 |
-| `--provider <name>` | `fish-audio` / `volcengine` / `edge-tts` | 自动检测 |
+| `--provider <name>` | `edge-tts` / `fish-audio` / `volcengine` | `edge-tts` |
 | `--voice <name>` | voice / reference_id / spk_id | CONFIG 或 provider 默认 |
 | `--rate <rate>` | 语速，如 `+20%` | `+0%` |
 | `--volume <vol>` | 音量，如 `+50%` | `+0%` |
@@ -188,7 +188,7 @@ vault 不存在或 `QIUSHUIAI_OPS_VAULT` 未设置时，提示用户先跑 `qius
 
 ## 关键规则
 
-1. **字幕策略**：Fish Audio / edge-tts 只产音频；火山 v3 默认请求原生字幕。若火山已生成字幕，后续流程直接复用；若未生成字幕，再调用 `qiushuiai-asr` 生成字幕。
+1. **字幕策略**：edge-tts / Fish Audio 只产音频；火山 v3 可显式开启原生字幕。若 TTS 未生成字幕，后续流程再调用 `qiushuiai-asr` 生成字幕。
 2. **音色固定**：口播账号同一人设用同一把嗓子；选定后写入 `CONFIG.md`，跨视频一致。
 3. **默认导出成品口播**：生成后自动做响度处理，默认目标 `-16 LUFS / -1 dBTP / LRA 7`；需要原始 TTS 时可用 `--no-master`。
 4. **凭证平台级共享**：密钥按本节统一命名放环境变量，配一次多 skill 复用；CONFIG.md 只放非密钥偏好。

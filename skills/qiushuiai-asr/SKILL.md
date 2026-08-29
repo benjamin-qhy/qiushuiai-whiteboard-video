@@ -1,6 +1,6 @@
 ---
 name: qiushuiai-asr
-description: 音频转字幕（ASR）— 把一段口播音频转成 SRT 字幕，带时间轴。多 provider：火山引擎豆包语音 ASR、Fish Audio ASR、edge-tts（按文本重合成估算，无密钥兜底）。支持错词字典纠错（逐条 "误识别 → 正确" 替换）与照稿念时直接用口播稿做字幕基准。只产字幕；配音由 qiushuiai-tts 生成。在 qiushuiai 自媒体运营 vault 里字幕落 05-作品/草稿/口播/<id>/。Use when the user says "生成字幕"、"音频转字幕"、"出字幕"、"打轴"、"ASR"、"语音转文字"、"字幕纠错"、"speech to text"、"transcribe"，或拿着一段配音要加字幕时。
+description: 字幕打轴（ASR/估算）— 把一段口播音频或文稿转成 SRT 字幕，带时间轴。默认使用免费 edge-tts 按文本重合成估算；火山引擎和 Fish Audio 可作为显式配置的真实 ASR provider。支持错词字典纠错（逐条 "误识别 → 正确" 替换）与照稿念时直接用口播稿做字幕基准。只产字幕；配音由 qiushuiai-tts 生成。Use when the user says "生成字幕"、"音频转字幕"、"出字幕"、"打轴"、"ASR"、"语音转文字"、"字幕纠错"、"speech to text"、"transcribe"，或拿着一段配音要加字幕时。
 version: 0.1.0
 metadata:
   openclaw:
@@ -13,7 +13,7 @@ metadata:
 
 # 音频转字幕（ASR）
 
-把口播音频转成 SRT 字幕（带时间轴）。多 provider 抽象：火山引擎 / Fish Audio 做真实 ASR，edge-tts 做无密钥的近似兜底。职责单一：**只产字幕**。配音是 `qiushuiai-tts`，剪辑是 `qiushuiai-video-cut`，本 skill 不碰。
+把口播音频或文稿转成 SRT 字幕（带时间轴）。默认 `edge-tts` 做无密钥近似打轴；火山引擎 / Fish Audio 做可选真实 ASR。职责单一：**只产字幕**。配音是 `qiushuiai-tts`，剪辑不是本 skill 的事。
 
 两条提准确率的路子（可叠加）：
 - **照稿念** → 传口播稿 `--script`，字幕文本直接用稿子（最准）。
@@ -49,11 +49,11 @@ provider 抽象在 `scripts/providers/subtitle/`，各读下表所列的**平台
 
 | Provider | 凭证（密钥放 `.env`） | 机制 |
 |----------|------|------|
-| `volcengine`（优先） | `VOLCENGINE_TTS_APPID`、`VOLCENGINE_TTS_TOKEN` | 字幕 VC 接口真实 ASR，含字级时间戳（写 `.words.json`） |
+| `edge-tts`（默认） | 无需密钥（需 `pip install edge-tts`） | **不做 ASR**，按 `--script/--text` 重合成估算时间轴（近似），无密钥默认 |
+| `volcengine` | `VOLCENGINE_TTS_APPID`、`VOLCENGINE_TTS_TOKEN` | 字幕 VC 接口真实 ASR，含字级时间戳（写 `.words.json`） |
 | `fish-audio` | `FISH_AUDIO_API_KEY` | ASR 接口真实识别，返回分句时间戳 |
-| `edge-tts` | 无需密钥（需 `pip install edge-tts`） | **不做 ASR**，按 `--script/--text` 重合成估算时间轴（近似），无密钥兜底 |
 
-**默认 provider 选择**（无 `--provider` 时）：有火山 APPID+TOKEN → volcengine；否则有 `FISH_AUDIO_API_KEY` → fish-audio；否则 edge-tts。
+**默认 provider 选择**（无 `--provider` 且 CONFIG.md 未指定时）：`edge-tts`。若要使用 Fish Audio 或火山引擎，请显式传 `--provider` 或在 CONFIG.md 写 `provider:`。
 
 真实 ASR（volcengine/fish-audio）失败时，若提供了 `--script/--text` 且装了 `ffprobe`，自动回退到「按音频时长比例切句」估算，不直接报废。
 
@@ -83,7 +83,7 @@ FISH_AUDIO_API_KEY=fa-xxx
 
 ```yaml
 ---
-provider: volcengine
+provider: edge-tts
 dict: /path/to/错词字典.md   # 默认错词字典，免得每次传 --dict
 words_in_cue: 10
 max_chars: 0
@@ -103,8 +103,11 @@ max_chars: 0
 ## Usage
 
 ```bash
-# 音频 → 字幕（默认 provider）
-${BUN_X} {baseDir}/scripts/main.ts --audio narration.mp3 --output narration
+# 文稿 → 字幕（默认 edge-tts 近似时间轴）
+${BUN_X} {baseDir}/scripts/main.ts --script script.md --output narration --drop-headings
+
+# 音频 → 字幕（真实 ASR 需要显式 provider）
+${BUN_X} {baseDir}/scripts/main.ts --audio narration.mp3 --output narration --provider volcengine
 
 # 照稿念：口播稿作基准 + 真实 ASR 打轴（结构标题不进字幕）
 ${BUN_X} {baseDir}/scripts/main.ts --audio narration.mp3 --output narration \
@@ -129,9 +132,9 @@ ${BUN_X} {baseDir}/scripts/main.ts --audio narration.mp3 --output narration --js
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--audio <path>` | 输入音频（真实 ASR 必填） | — |
+| `--audio <path>` | 输入音频（真实 ASR 必填；edge-tts 可选） | — |
 | `--output <path>` | 输出路径（`.srt`，无扩展名自动补） | 必填 |
-| `--provider <name>` | `volcengine` / `fish-audio` / `edge-tts` | 自动检测 |
+| `--provider <name>` | `edge-tts` / `volcengine` / `fish-audio` | `edge-tts` |
 | `--script <path>` | 口播稿文件（照稿念基准 / ASR 兜底） | — |
 | `--text <text>` | 同 `--script`，直接传文本 | — |
 | `--dict <path>` | 错词字典 | CONFIG `dict` |
@@ -143,7 +146,7 @@ ${BUN_X} {baseDir}/scripts/main.ts --audio narration.mp3 --output narration --js
 
 **`--script` 喂口播稿 `script.md` 时务必加 `--drop-headings`**：`## 开场钩子 / ## 正文 / ## 结尾` 是结构脚手架，不该进字幕。不加则只去 `#` 标记保留标题文字（通用文章场景），会把「正文」等漏进字幕。
 
-volcengine 真实 ASR 会额外写 `<output>.words.json`（字级时间戳），供 `qiushuiai-video-cut` 做卡词高亮/精剪。
+脚本会额外写 `<output>.words.json`，供白板视频流水线做字幕重定时。真实 ASR provider 若已写入更细粒度时间戳，会优先保留 provider 产物。
 
 ## 在运营 vault 中使用（可选）
 
@@ -158,7 +161,7 @@ vault 不存在或 `QIUSHUIAI_OPS_VAULT` 未设置时，提示用户先跑 `qius
 ## 关键规则
 
 1. **只产字幕**：不配音（用 `qiushuiai-tts`）、不剪辑、不自动接下一步。
-2. **准确率优先级**：照稿念 > 真实 ASR + 错词字典 > edge-tts 估算。能传口播稿就传。
+2. **准确率优先级**：照稿念 + edge-tts 估算可免费跑通；需要真实识别时显式使用真实 ASR + 错词字典。能传口播稿就传。
 3. **凭证平台级共享**：密钥按本节统一命名放环境变量，与 tts 复用同一套火山/Fish 凭证。
 4. **provider 可扩展**：加 provider 不改其他 skill。
 5. **优雅降级**：真实 ASR 失败 → 有稿+ffprobe 时按时长比例兜底，不静默失败；字典缺失只告警跳过。

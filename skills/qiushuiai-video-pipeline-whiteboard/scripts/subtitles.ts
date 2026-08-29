@@ -343,17 +343,15 @@ export function correctCueTextFromScript(cues: Cue[], scriptText: string) {
   return { cues: corrected, changed };
 }
 
-export async function reviewSubtitles(scriptPath: string, guidedPath: string, truePath: string, output: string) {
+export async function reviewSubtitles(scriptPath: string, guidedPath: string, output: string) {
   const script = spokenScript(await readFile(scriptPath, "utf8"));
   const guided = parseSrt(await readFile(guidedPath, "utf8"));
   const correction = correctCueTextFromScript(guided, script);
   if (correction.changed) await writeFile(guidedPath, serializeSrt(correction.cues));
-  const truth = parseSrt(await readFile(truePath, "utf8"));
   const guidedText = correction.cues.map((cue) => cue.text).join("");
-  const trueText = truth.map((cue) => cue.text).join("");
   const exact = normalized(guidedText) === normalized(script);
   const now = new Date().toLocaleString("zh-CN", { hour12: false });
-  const report = `# 字幕审核\n\n> 审核时间：${now} ｜ 对比：视频.md ↔ 字幕.srt（真转写：VolcEngine，独立二转）\n> 修改总数：${correction.changed} 条\n\n## 审核结论\n- ${exact ? "正式字幕已按视频.md校准；归一化后完全一致。" : "字幕.srt 与视频.md仍存在差异，必须人工或AI定点审核字幕；禁止修改视频.md。"}\n- 时间轴来自真实配音，修正字幕时必须保持编号与时间轴不变。\n- 独立真转写用于检查TTS发音风险，不直接作为改写文稿的依据。\n- 若 TTS/ASR 把术语转成错词，正式字幕文本以视频.md为准。\n\n## 独立真转写\n\n${trueText}\n`;
+  const report = `# 字幕审核\n\n> 审核时间：${now} ｜ 对比：视频.md ↔ 字幕.srt\n> 修改总数：${correction.changed} 条\n\n## 审核结论\n- ${exact ? "正式字幕已按视频.md校准；归一化后完全一致。" : "字幕.srt 与视频.md仍存在差异，必须人工或AI定点审核字幕；禁止修改视频.md。"}\n- 时间轴来自当前配音或所选字幕 provider，修正字幕时必须保持编号与时间轴不变。\n- 若 TTS/ASR 把术语转成错词，正式字幕文本以视频.md为准。\n`;
   await writeFile(output, report);
   if (!exact) throw new Error(`字幕审核未通过，请根据 ${output} 修正字幕.srt 后重跑`);
 }

@@ -47,13 +47,13 @@ function parseArgs(argv: string[]): CliArgs {
 function printHelp(): void {
   console.log(`Usage: qiushuiai-asr [options]
 
-音频 → 字幕（SRT）。真实 ASR（fish-audio / volcengine）+ 错词字典纠错。
+音频 → 字幕（SRT）。默认 edge-tts 近似打轴；fish-audio / volcengine 可选真实 ASR。
 配音由 qiushuiai-tts 单独生成。
 
 Options:
-  --audio <path>        输入音频（fish-audio / volcengine 真实 ASR 必填）
+  --audio <path>        输入音频（fish-audio / volcengine 真实 ASR 必填；edge-tts 可选）
   --output <path>       输出路径（.srt，无扩展名自动补）
-  --provider <name>     fish-audio | volcengine | edge-tts（默认自动检测）
+  --provider <name>     edge-tts | fish-audio | volcengine（默认 edge-tts）
   --script <path>       口播稿文件：照稿念时作字幕基准 / ASR 失败时按时长比例兜底
   --text <text>         同 --script，但直接传文本
   --dict <path>         错词字典（逐行 "误识别 → 正确"），ASR 后逐条替换
@@ -68,7 +68,7 @@ Options:
   FISH_AUDIO_API_KEY
   VOLCENGINE_TTS_APPID / VOLCENGINE_TTS_TOKEN
 
-默认 provider：有火山 APPID+TOKEN → volcengine；否则有 FISH_AUDIO_API_KEY → fish-audio；否则 edge-tts。
+默认 provider：edge-tts。若要使用 Fish Audio 或火山引擎，请通过 --provider 或 CONFIG.md 显式指定。
 注：edge-tts 不做 ASR，而是按 --script/--text 重新合成估算时间轴（近似），适合无密钥兜底。`);
 }
 
@@ -133,11 +133,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const defaultProvider: SubtitleProvider = isVolcengineAvailable()
-    ? "volcengine"
-    : isFishAudioAvailable()
-      ? "fish-audio"
-      : "edge-tts";
+  const defaultProvider: SubtitleProvider = "edge-tts";
   const provider: SubtitleProvider =
     args.provider || (cfg.provider as SubtitleProvider) || defaultProvider;
   validateProvider(provider);
@@ -193,6 +189,14 @@ async function main(): Promise<void> {
 
   const srt = formatSrt(entries);
   await writeFile(srtPath, srt, "utf-8");
+  const wordsPath = `${outputPrefix}.words.json`;
+  if (!existsSync(wordsPath)) {
+    await writeFile(wordsPath, JSON.stringify(entries.map((entry) => ({
+      text: entry.text,
+      start_time: entry.startMs,
+      end_time: entry.endMs,
+    })), null, 2), "utf-8");
+  }
 
   if (args.json) {
     console.log(
@@ -200,6 +204,7 @@ async function main(): Promise<void> {
         status: "ok",
         provider,
         srt: srtPath,
+        words: wordsPath,
         entries: entries.length,
         dictRules,
         dictHits,
@@ -207,6 +212,7 @@ async function main(): Promise<void> {
     );
   } else {
     console.log(`字幕已保存: ${srtPath}（${entries.length} 条）`);
+    console.log(`字幕时间 JSON 已保存: ${wordsPath}`);
     if (dictRules) console.log(`错词字典：${dictRules} 条规则，命中替换 ${dictHits} 处。`);
   }
 }

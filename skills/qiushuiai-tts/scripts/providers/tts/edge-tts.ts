@@ -5,6 +5,10 @@ export function getDefaultVoice(): string {
   return "zh-CN-YunxiNeural";
 }
 
+function edgeTtsCommand(args: string[]): string[] {
+  return Bun.which("edge-tts") ? ["edge-tts", ...args] : ["python3", "-m", "edge_tts", ...args];
+}
+
 export async function generateSpeech(
   text: string,
   voice: string,
@@ -35,7 +39,7 @@ export async function generateSpeech(
       args.push("--pitch", options.pitch);
     }
 
-    const proc = Bun.spawn(["edge-tts", ...args], {
+    const proc = Bun.spawn(edgeTtsCommand(args), {
       stdout: "pipe",
       stderr: "pipe",
     });

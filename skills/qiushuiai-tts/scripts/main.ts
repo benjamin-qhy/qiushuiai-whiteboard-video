@@ -66,13 +66,13 @@ function parseArgs(argv: string[]): CliArgs {
 function printHelp(): void {
   console.log(`Usage: qiushuiai-tts [options]
 
-口播稿 / 文本 → 语音（MP3）。火山 v3 可同时输出字幕；其他 provider 字幕由 qiushuiai-asr 生成。
+口播稿 / 文本 → 语音（MP3）。默认 edge-tts；火山 v3 可选并可同时输出字幕。
 
 Options:
   --text <text>        直接输入文本
   --file <path>        输入 Markdown / 纯文本文件（.md 自动转纯文本）
   --output <path>      输出路径（.mp3；无扩展名则补 .mp3）
-  --provider <name>    TTS provider: fish-audio | volcengine | edge-tts
+  --provider <name>    TTS provider: edge-tts | fish-audio | volcengine
   --voice <name>       voice / Fish Audio reference_id / 火山 spk_id
   --rate <rate>        语速，如 +20% / -10%（默认 +0%）
   --volume <vol>       音量，如 +50%（默认 +0%）
@@ -97,7 +97,7 @@ Options:
   FISH_AUDIO_API_KEY / FISH_AUDIO_REFERENCE_ID
   VOLCENGINE_TTS_API_KEY / VOLCENGINE_TTS_APPID / VOLCENGINE_TTS_TOKEN / VOLCENGINE_TTS_CLUSTER / VOLCENGINE_TTS_SPK_ID
 
-默认 provider：有 FISH_AUDIO_API_KEY → fish-audio；否则有 VOLCENGINE_TTS_API_KEY 或 VOLCENGINE_TTS_APPID+TOKEN → volcengine；否则 edge-tts。`);
+默认 provider：edge-tts。若要使用 Fish Audio 或火山引擎，请通过 --provider 或 CONFIG.md 显式指定。`);
 }
 
 function normalizeTtsResult(result: TtsResult): Exclude<TtsResult, Uint8Array> {
@@ -317,11 +317,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const defaultProvider: TtsProvider = isFishAudioAvailable()
-    ? "fish-audio"
-    : isVolcengineAvailable()
-      ? "volcengine"
-      : "edge-tts";
+  const defaultProvider: TtsProvider = "edge-tts";
   const provider: TtsProvider = args.provider || (cfg.provider as TtsProvider) || defaultProvider;
   validateProvider(provider);
 

@@ -1,6 +1,10 @@
 import { readFile, writeFile, unlink } from "fs/promises";
 import type { SubtitleEntry, SubtitleOptions } from "../../types";
 
+function edgeTtsCommand(args: string[]): string[] {
+  return Bun.which("edge-tts") ? ["edge-tts", ...args] : ["python3", "-m", "edge_tts", ...args];
+}
+
 function parseSubTime(timeStr: string): number {
   // Handles both VTT (HH:MM:SS.mmm) and SRT (HH:MM:SS,mmm) formats
   const match = timeStr.match(/(\d+):(\d+):(\d+)[.,](\d+)/);
@@ -204,7 +208,7 @@ export async function generateSubtitles(
       args.push("--rate", rate);
     }
 
-    const proc = Bun.spawn(["edge-tts", ...args], {
+    const proc = Bun.spawn(edgeTtsCommand(args), {
       stdout: "pipe",
       stderr: "pipe",
     });
